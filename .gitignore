@@ -3,6 +3,7 @@
 !.gitignore
 !RayTracer.csproj
 !README.md
+!imgui.ini
 
 !src/
 !src/**
