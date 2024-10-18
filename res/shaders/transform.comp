@@ -1,0 +1,149 @@
+#version 460
+
+#define EPSILON 1e-6
+#define FLT_MAX 3.402823466e+38
+
+layout(local_size_x = 32, local_size_y = 1, local_size_y = 1) in;
+
+
+struct Vertex {
+    int positionIndex;
+    int normalIndex;
+    int uvIndex;
+};
+
+struct Triangle {
+    int vertexIndexA;
+    int vertexIndexB;
+    int vertexIndexC;
+    bool cullBackface;
+};
+
+struct Span {
+    int offset;
+    int count;
+};
+
+struct Mesh {
+    Span positions;
+    Span normals;
+    Span uvs;
+    Span vertices;
+    Span triangles;
+};
+
+struct Model {
+    mat4 transform;
+    Mesh sourceMesh;
+    Mesh worldMesh;
+};
+
+struct BoundingBox {
+    vec4 minPosition;
+    vec4 maxPosition;
+};
+
+uniform int modelCount;
+
+layout (std430, binding = 0) readonly buffer SourcePositions {
+    vec4 sourcePositions[];
+};
+
+layout (std430, binding = 1) readonly buffer SourceNormals {
+    vec4 sourceNormals[];
+};
+
+layout (std430, binding = 2) readonly buffer SourceUVs {
+    vec2 sourceUVs[];
+};
+
+layout (std430, binding = 3) readonly buffer SourceVertices {
+    Vertex sourceVertices[];
+};
+
+layout (std430, binding = 4) readonly buffer SourceTriangles {
+    Triangle sourceTriangles[];
+};
+
+layout (std430, binding = 5) readonly buffer Models {
+    Model models[];
+};
+
+layout (std430, binding = 6) buffer WorldPositions {
+    vec4 worldPositions[];
+};
+
+layout (std430, binding = 7) buffer WorldNormals {
+    vec4 worldNormals[];
+};
+
+layout (std430, binding = 8) buffer WorldVertices {
+    Vertex worldVertices[];
+};
+
+layout (std430, binding = 9) buffer WorldTriangles {
+    Triangle worldTriangles[];
+};
+
+layout( std430, binding = 10 ) buffer BoundingBoxes {
+    BoundingBox boundingBoxes[];
+};
+
+void main() { 
+    
+    // loop through models
+    
+    // loop through triangles
+    
+    // transform triangle positions normals and add them to new buffers
+    
+    // create bounding box for model using transformed triangles and add to bounding box buffer
+    
+    // re add mdoels to model buffer with updated triangle positions and counts
+    
+    int modelIndex = int(gl_WorkGroupID.x);
+    
+    //int id = int(gl_LocalInvocationID.x);
+    //int size = int(gl_WorkGroupSize.x);
+    
+    //for(int i = 0; i < modelCount; i++) {
+        Model model = models[modelIndex];
+        
+        vec4 minPosition = vec4(FLT_MAX);
+        vec4 maxPosition = vec4(-FLT_MAX);
+        
+        for(int j = 0; j < model.sourceMesh.positions.count; j++) {
+            int sourceIndex = model.sourceMesh.positions.offset + j;
+            int worldIndex = model.worldMesh.positions.offset + j;
+            vec4 worldPosition = sourcePositions[sourceIndex] * model.transform;
+            worldPositions[worldIndex] = worldPosition;
+            
+            minPosition = min(minPosition, worldPosition);
+            maxPosition = max(maxPosition, worldPosition);     
+        }
+        
+        boundingBoxes[modelIndex] = BoundingBox(minPosition - EPSILON, maxPosition + EPSILON);
+        
+        
+        
+        for(int j = 0; j < model.sourceMesh.normals.count; j++) {
+            int sourceIndex = model.sourceMesh.normals.offset + j;
+            int worldIndex = model.worldMesh.normals.offset + j;
+            worldNormals[worldIndex] = sourceNormals[sourceIndex] * model.transform;
+        }
+        
+        for(int j = 0; j < model.sourceMesh.vertices.count; j++) {
+            int sourceIndex = model.sourceMesh.vertices.offset + j;
+            int worldIndex = model.worldMesh.vertices.offset + j;
+            worldVertices[worldIndex] = sourceVertices[sourceIndex];
+        }
+        
+        for(int j = 0; j < model.sourceMesh.triangles.count; j++) {
+            int sourceIndex = model.sourceMesh.triangles.offset + j;
+            int worldIndex = model.worldMesh.triangles.offset + j;
+            worldTriangles[worldIndex] = sourceTriangles[sourceIndex];
+        }       
+    //} 
+}
+
+

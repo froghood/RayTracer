@@ -1,0 +1,36 @@
+#version 460
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+
+// layout(std430, binding = 0) buffer colorsSSBO {
+//     vec4 color[1280 / 4][720 / 4];
+// };
+
+//const vec2 res = vec2(1280.0 / 4.0, 720.0 / 4.0);
+
+struct Camera {
+    mat4 transform;
+    float focal;
+};
+
+layout(std140, binding = 0) uniform cameraUBO {
+    Camera camera;
+};
+
+layout(rgba32f, binding = 0) uniform image2D out_tex;
+
+uniform float t;
+
+void main() {
+    
+    ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+    vec2 size = vec2(imageSize(out_tex));
+    
+    vec2 rg = vec2(id) / size;
+    
+    //int index = id.y * int(gl_NumWorkGroups.x) + id.x;
+    
+    //color[id.x][id.y] = vec4(vec2(id) / res, 0.0, 1.0);
+    
+    imageStore(out_tex, id, vec4(camera.transform[3].xyz, 1.0));
+}

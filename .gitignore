@@ -1,0 +1,12 @@
+/**
+
+!.gitignore
+!RayTracer.csproj
+!README.md
+
+!src/
+!src/**
+
+!res/
+!res/**
+

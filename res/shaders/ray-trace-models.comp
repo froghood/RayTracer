@@ -1,0 +1,311 @@
+#version 460
+
+#define EPSILON 1e-6
+#define FLT_MAX 3.402823466e+38
+#define PI 3.14159265359
+
+struct Sun{
+    //mat3 rotation;
+    vec3 direction;
+};
+
+struct Camera {
+    mat4 transform;
+    float focal;
+};
+
+struct Vertex {
+    int positionIndex;
+    int normalIndex;
+    int uvIndex;
+};
+
+struct Triangle {
+    int vertexIndexA;
+    int vertexIndexB;
+    int vertexIndexC;
+    bool cullBackface;
+};
+
+struct Span {
+    int offset;
+    int count;
+};
+
+struct Mesh {
+    Span positions;
+    Span normals;
+    Span uvs;
+    Span vertices;
+    Span triangles;
+};
+
+struct Model {
+    mat4 transform;
+    Mesh sourceMesh;
+    Mesh worldMesh;
+};
+
+struct Ray {
+    vec3 origin;
+    vec3 direction;
+    vec3 inverseDirection;
+};
+
+struct HitInfo {
+    bool didHit;
+    float hitDistance;
+    vec3 hitPosition;
+    vec3 normal;
+    vec3 barycentric;
+};
+
+struct BoundingBox {
+    vec4 minPosition;
+    vec4 maxPosition;
+};
+
+struct Stats {
+    int numTriangleChecks;
+    int numBoxChecks;
+};
+
+uniform vec2 resolution;
+uniform int modelCount;
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+
+layout(rgba8, binding = 0) uniform image2D colorTexture;
+layout(r32f, binding = 1) uniform image2D depthTexture;
+layout(r32i, binding = 2) uniform iimage2D objectTexture;
+
+layout(std140, binding = 0) uniform cameraUBO {
+    Camera camera;
+};
+
+layout(std140, binding = 1) uniform sunUBO {
+    Sun sun;
+};
+
+layout (std430, binding = 0) readonly buffer SourcePositions {
+    vec4 sourcePositions[];
+};
+
+layout (std430, binding = 1) readonly buffer SourceNormals {
+    vec4 sourceNormals[];
+};
+
+layout (std430, binding = 2) readonly buffer SourceUVs {
+    vec2 sourceUVs[];
+};
+
+layout (std430, binding = 3) readonly buffer SourceVertices {
+    Vertex sourceVertices[];
+};
+
+layout (std430, binding = 4) readonly buffer SourceTriangles {
+    Triangle sourceTriangles[];
+};
+
+layout (std430, binding = 5) readonly buffer Models {
+    Model models[];
+};
+
+layout (std430, binding = 6) readonly buffer WorldPositions {
+    vec4 worldPositions[];
+};
+
+layout (std430, binding = 7) readonly buffer WorldNormals {
+    vec4 worldNormals[];
+};
+
+layout (std430, binding = 8) readonly buffer WorldVertices {
+    Vertex worldVertices[];
+};
+
+layout (std430, binding = 9) readonly buffer WorldTriangles {
+    Triangle worldTriangles[];
+};
+
+layout (std430, binding = 10) readonly buffer BoundingBoxes {
+    BoundingBox boundingBoxes[];
+};
+
+layout (std430, binding = 11) buffer StatsBuffer {
+    Stats stats;
+};
+
+
+bool rayBoundingBox(Ray ray, int boxIndex) {
+    
+    BoundingBox box = boundingBoxes[boxIndex];
+    
+    vec3 bMin = box.minPosition.xyz;
+    vec3 bMax = box.maxPosition.xyz;
+    
+    vec3 tmin = (bMin - ray.origin) * ray.inverseDirection;
+    vec3 tmax = (bMax - ray.origin) * ray.inverseDirection;
+    
+    vec3 t1 = min(tmin, tmax);
+    vec3 t2 = max(tmin, tmax);
+    
+    float tNear = max(t1.x, max(t1.y, t1.z));
+    float tFar = min(t2.x, min(t2.y, t2.z));
+    
+    return tNear < tFar && tFar > 0.0;
+}
+
+HitInfo rayTriangle(Ray ray, int modelIndex, int triIndex) {
+    
+    HitInfo hitInfo;
+    hitInfo.didHit = false;
+    
+    Model model = models[modelIndex];
+    Triangle tri = worldTriangles[triIndex];
+    
+    int aIndex = model.worldMesh.positions.offset + worldVertices[model.worldMesh.vertices.offset + tri.vertexIndexA].positionIndex;
+    int bIndex = model.worldMesh.positions.offset + worldVertices[model.worldMesh.vertices.offset + tri.vertexIndexB].positionIndex;
+    int cIndex = model.worldMesh.positions.offset + worldVertices[model.worldMesh.vertices.offset + tri.vertexIndexC].positionIndex;
+
+    vec3 a = worldPositions[aIndex].xyz;
+    vec3 b = worldPositions[bIndex].xyz;
+    vec3 c = worldPositions[cIndex].xyz;
+    
+    vec3 e1 = b - a;
+    vec3 e2 = c - a;
+    
+    hitInfo.normal = cross(e1, e2);
+    
+    float det = -dot(ray.direction, hitInfo.normal);
+    
+    if (tri.cullBackface && det <= EPSILON) return hitInfo;
+    
+    float invDet = 1.0 / det; 
+    vec3 ao = ray.origin - a; 
+    
+    hitInfo.hitDistance = dot(ao, hitInfo.normal) * invDet;
+    
+    if (hitInfo.hitDistance <= EPSILON) return hitInfo;
+    
+    vec3 dao = cross(ao, ray.direction);
+    
+    float v = -dot(e1, dao) * invDet;
+    float u = dot(e2, dao) * invDet;
+    float w = 1.0 - u - v;
+     
+    hitInfo.didHit = (u >= -EPSILON && v >= -EPSILON  && w >= -EPSILON );
+    hitInfo.hitPosition = ray.origin + ray.direction * hitInfo.hitDistance;
+    hitInfo.barycentric = vec3(w, u, v);
+    
+    return hitInfo;
+     
+}
+
+HitInfo castRay(Ray ray, out int modelIndex, out int triIndex) {
+      
+    HitInfo closestHitInfo;
+    closestHitInfo.didHit = false;
+    closestHitInfo.hitDistance = FLT_MAX;
+    modelIndex = -1;
+    triIndex = -1;
+    
+    for(int i = 0; i < modelCount; i++) {
+
+        int offset = models[i].worldMesh.triangles.offset;
+        int count = models[i].worldMesh.triangles.count;
+        
+        //atomicAdd(stats.numBoxChecks, 1);
+        if (rayBoundingBox(ray, i)) {
+            for(int j = offset; j < offset + count; j++) {
+                    
+                //atomicAdd(stats.numTriangleChecks, 1);
+                HitInfo hitInfo = rayTriangle(ray, i, j);
+                
+                if (hitInfo.didHit && hitInfo.hitDistance < closestHitInfo.hitDistance) {
+                    closestHitInfo = hitInfo;  
+                    modelIndex = i;
+                    triIndex = j;     
+                }                   
+            }     
+            
+        }
+        
+    }
+    
+    return closestHitInfo;
+}
+
+vec2 interpolateBarycentric(vec2 a, vec2 b, vec2 c, vec3 barycentric) {
+    return a * barycentric.x + b * barycentric.y + c * barycentric.z;
+}
+
+vec3 interpolateBarycentric(vec3 a, vec3 b, vec3 c, vec3 barycentric) {
+    return a * barycentric.x + b * barycentric.y + c * barycentric.z;
+}
+
+vec4 interpolateBarycentric(vec4 a, vec4 b, vec4 c, vec3 barycentric) {
+    return a * barycentric.x + b * barycentric.y + c * barycentric.z;
+}
+
+
+void main() {
+    
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    
+    vec2 aspectRatio = vec2(
+        max(resolution.x / resolution.y, 1), 
+        max(resolution.y / resolution.x, 1));
+        
+    vec4 bgColor = vec4(0.8, 0.8, 0.8, 1.0);
+  
+    mat3 rotation = mat3(camera.transform[0].xyz,camera.transform[1].xyz,camera.transform[2].xyz);
+    
+    vec3 rayOrigin = camera.transform[3].xyz;
+    vec3 rayDirection = normalize(vec3(
+        (vec2(pixel) / resolution - 0.5) * 2.0 * aspectRatio,
+        camera.focal       
+    ) * rotation);
+    vec3 inverseDirection = vec3(1.0 / rayDirection.x, 1.0 / rayDirection.y, 1.0 / rayDirection.z);
+    
+    
+    Ray cameraRay = Ray(rayOrigin, rayDirection, inverseDirection);
+     
+    int modelIndex;
+    int triIndex;
+    
+    
+    
+    HitInfo hitInfo = castRay(cameraRay, modelIndex, triIndex);
+        
+    
+    vec4 color = bgColor;
+    float depth = FLT_MAX;
+    
+    
+    
+    if (hitInfo.didHit) {
+        
+        Model model = models[modelIndex];
+        Triangle tri = worldTriangles[triIndex];
+        
+        int aIndex = model.worldMesh.normals.offset + worldVertices[model.worldMesh.vertices.offset + tri.vertexIndexA].normalIndex;
+        int bIndex = model.worldMesh.normals.offset + worldVertices[model.worldMesh.vertices.offset + tri.vertexIndexB].normalIndex;
+        int cIndex = model.worldMesh.normals.offset + worldVertices[model.worldMesh.vertices.offset + tri.vertexIndexC].normalIndex;
+
+        vec4 normalA = worldNormals[aIndex];
+        vec4 normalB = worldNormals[bIndex];
+        vec4 normalC = worldNormals[cIndex];
+        
+        vec4 normal = interpolateBarycentric(normalA, normalB, normalC, hitInfo.barycentric);
+        
+        color = vec4(vec3(dot(-cameraRay.direction, normalize(normal.xyz)) * 0.25 + 0.75), 1.0);
+      
+        depth = hitInfo.hitDistance;
+        
+    } 
+        
+    imageStore(colorTexture, pixel, color);
+    imageStore(depthTexture, pixel, vec4(depth, 0.0, 0.0, 0.0));
+    imageStore(objectTexture, pixel, ivec4(modelIndex));
+
+}

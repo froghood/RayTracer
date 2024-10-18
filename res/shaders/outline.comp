@@ -1,0 +1,44 @@
+#version 460
+
+#define FLT_MAX 3.402823466e+38
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+
+layout(rgba8, binding = 0) uniform image2D colorTexture;
+layout(r32f, binding = 1) uniform image2D depthTexture;
+layout(r32i, binding = 2) uniform iimage2D objectTexture;
+
+bool isInBounds(ivec2 pixel, uvec3 resolution) {
+    return pixel.x >= 0 && pixel.y >= 0 && pixel.x < resolution.x && pixel.y < resolution.y;   
+}
+
+void main() {
+    
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);  
+    uvec3 resolution = gl_NumWorkGroups * gl_WorkGroupSize;
+    
+    ivec2 neighbors[4] = ivec2[](ivec2(1,0), ivec2(-1,0), ivec2(0,1), ivec2(0,-1));
+    
+    
+    int currentID = imageLoad(objectTexture, pixel).r;
+    float currentDepth = imageLoad(depthTexture, pixel).r;
+    
+    for (int i = 0; i < neighbors.length(); i++) {
+        ivec2 neighbor = pixel + neighbors[i];
+        
+        bool isInBounds = isInBounds(neighbor, resolution);
+        
+        int neighborID = isInBounds ? imageLoad(objectTexture, neighbor).r : -1;
+        float neighborDepth = isInBounds ? imageLoad(depthTexture, neighbor).r : FLT_MAX;
+        
+        if (neighborID != currentID && neighborDepth < currentDepth) {
+            imageStore(colorTexture, pixel, vec4(0.0, 0.0, 0.0, 1.0));
+            break;
+        }
+        
+        
+        
+    }
+    
+    
+}
