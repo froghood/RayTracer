@@ -73,7 +73,7 @@ public class MainScene : Scene {
             var mouseDelta = Game.Input.GetMouseDelta();
 
 
-            rayTracer.RotateCamera(new Vector3(-mouseDelta.Yx) * 0.002f);
+            rayTracer.Camera.Rotate(new Vector3(-mouseDelta.Yx) * 0.002f);
 
         } else {
             Game.CursorState = CursorState.Normal;
@@ -85,7 +85,7 @@ public class MainScene : Scene {
             (Game.Input.IsKeyDown(Keys.W) ? 1f : 0f) - (Game.Input.IsKeyDown(Keys.S) ? 1f : 0f)
         );
 
-        rayTracer.MoveCamera(movementDirection * 3f * Game.Delta.AsSeconds());
+        rayTracer.Camera.Translate(movementDirection * 3f * Game.Delta.AsSeconds());
     }
 
     public override void Render(float alpha) {

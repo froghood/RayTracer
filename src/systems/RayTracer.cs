@@ -10,9 +10,7 @@ using OpenTK.Windowing.GraphicsLibraryFramework;
 
 public class RayTracer : GameSystem {
 
-    public Vector3 CameraRotation { get; private set; }
-    public Vector3 CameraPosition { get; private set; }
-    public float CameraFocalLength { get; private set; }
+    public Camera Camera { get; }
     public Stats Stats { get; private set; }
     public long TransformTime { get; private set; }
     public long RayTraceTime { get; private set; }
@@ -25,22 +23,21 @@ public class RayTracer : GameSystem {
     private VertexArray vertexArray;
 
 
-    private UniformBuffer cameraBuffer;
-    private UniformBuffer sunBuffer;
-    private StorageBuffer sphereBuffer;
-    private StorageBuffer modelBuffer;
-    private StorageBuffer worldPositionsBuffer;
-    private StorageBuffer worldNormalsBuffer;
-    private StorageBuffer worldVerticesBuffer;
-    private StorageBuffer worldTrianglesBuffer;
-    private StorageBuffer boundingBoxBuffer;
-    private StorageBuffer stats;
+    private UniformBuffer cameraBuffer = new UniformBuffer(BufferUsageHint.DynamicRead);
+    private UniformBuffer sunBuffer = new UniformBuffer(BufferUsageHint.StreamRead);
+    private StorageBuffer modelBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
+    private StorageBuffer worldPositionsBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
+    private StorageBuffer worldNormalsBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
+    private StorageBuffer worldVerticesBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
+    private StorageBuffer worldTrianglesBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
+    private StorageBuffer boundingBoxBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
+    private StorageBuffer stats = new StorageBuffer(16, BufferUsageHint.StreamRead);
 
 
 
-    private List<TraceableSphere> spheres;
+
     private Vector3 prevCameraPosition;
-    private List<TraceableModel> models;
+    private List<TraceableModel> models = new();
 
 
     private Vector2i outputSize;
@@ -56,8 +53,7 @@ public class RayTracer : GameSystem {
 
     private RayTracer() {
 
-        spheres = new List<TraceableSphere>();
-        models = new List<TraceableModel>();
+        Camera = new Camera(Vector3.Zero, Vector3.Zero, 1f);
 
         vertexArray = new VertexArray(
             new Layout(VertexAttribPointerType.Float, 2), // position
@@ -79,51 +75,15 @@ public class RayTracer : GameSystem {
         vertexArray.BufferVertexData(vertices, BufferUsageHint.StaticDraw);
         vertexArray.BufferIndices(indices, BufferUsageHint.StaticDraw);
 
-
-        cameraBuffer = new UniformBuffer(BufferUsageHint.DynamicRead);
-        sunBuffer = new UniformBuffer(BufferUsageHint.StreamRead);
-        sphereBuffer = new StorageBuffer(1024, BufferUsageHint.StreamRead);
-        modelBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
-        worldPositionsBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
-        worldNormalsBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
-        worldVerticesBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
-        worldTrianglesBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
-        boundingBoxBuffer = new StorageBuffer(1024 * 1024, BufferUsageHint.StreamRead);
-
-
-        stats = new StorageBuffer(16, BufferUsageHint.StreamRead);
-
-
-
-
-
         imGuiController = new ImGuiController((int)Game.WindowSize.X, (int)Game.WindowSize.Y);
-
-        // outputSize = new Vector2i(
-        //     (int)MathF.Ceiling(Game.WindowSize.X / 2f / 8f),
-        //     (int)MathF.Ceiling(Game.WindowSize.X / 2f / 4f)
-        // );
 
         outputSize = new Vector2i((int)MathF.Ceiling(Game.WindowSize.X / 2f), (int)MathF.Ceiling(Game.WindowSize.Y / 2f));
     }
 
-    public void SubmitSphere(TraceableSphere sphere) => spheres.Add(sphere);
 
     public void SubmitModel(TraceableModel model) => models.Add(model);
 
-    public void RotateCamera(Vector3 rotation) {
-        CameraRotation = new Vector3(
-            MathF.Max(MathF.Min(CameraRotation.X + rotation.X, MathF.PI / 2f), -MathF.PI / 2f),
-            Util.Normalize(CameraRotation.Y + rotation.Y),
-            Util.Normalize(CameraRotation.Z + rotation.Z)
-        );
-    }
 
-    public void MoveCamera(Vector3 movement) {
-        var rotation = Matrix3.CreateRotationY(-CameraRotation.Y);
-        prevCameraPosition = CameraPosition;
-        CameraPosition += movement * rotation;
-    }
 
     public void SetImGuiFrameLayout(Action layout) => imGuiController.SetLayout(layout);
 
@@ -243,8 +203,8 @@ public class RayTracer : GameSystem {
 
 
         BufferSun();
-        BufferCamera(alpha);
-        BufferTime = Timer.Time(() => BufferModelsNew(meshLibrary));
+        cameraBuffer.BufferData(Camera.GetData(alpha));
+        BufferTime = Timer.Time(() => BufferModels(meshLibrary));
 
         var transformCompute = shaderLibrary.Get("transform");
         //transformCompute.Uniform("modelCount", models.Count);
@@ -326,39 +286,9 @@ public class RayTracer : GameSystem {
         sunBuffer.BufferData(sun);
     }
 
-    private void BufferCamera(float alpha) {
-
-        Matrix4 transform = Matrix4.Identity;
-        transform *= Matrix4.CreateRotationZ(CameraRotation.Z);
-        transform *= Matrix4.CreateRotationY(CameraRotation.Y);
-        transform *= Matrix4.CreateRotationX(CameraRotation.X);
-
-        var position = (CameraPosition - prevCameraPosition) * alpha + prevCameraPosition;
-
-        transform *= Matrix4.CreateTranslation(position.X, position.Y, position.Z);
-        transform *= Matrix4.CreateScale(1f);
 
 
-        var camera = new Camera(transform, 1f);
-
-        cameraBuffer.BufferData(camera);
-    }
-
-    private void BufferSpheres() {
-
-        var data = new Sphere[spheres.Count];
-
-        for (int i = 0; i < spheres.Count; i++) {
-            var traceableSphere = spheres[i];
-            data[i] = new Sphere(traceableSphere.Position, traceableSphere.Color, traceableSphere.Radius);
-        }
-
-        sphereBuffer.Clear();
-        sphereBuffer.BufferSubData(data);
-        spheres.Clear();
-    }
-
-    private void BufferModelsNew(MeshLibrary meshLibrary) {
+    private void BufferModels(MeshLibrary meshLibrary) {
 
         int vertexSize = Marshal.SizeOf<Vertex>();
         int triangleSize = Marshal.SizeOf<Triangle>();
@@ -368,7 +298,6 @@ public class RayTracer : GameSystem {
         int currentVertexOffset = 0;
         int currentTriangleOffset = 0;
 
-        //modelBuffer.Clear();
 
         var data = new Model[models.Count];
 
@@ -404,81 +333,6 @@ public class RayTracer : GameSystem {
 
         modelBuffer.BufferSubData(data);
     }
-
-    // private void BufferModels() {
-
-    //     var meshLibrary = Game.Get<MeshLibrary>();
-    //     meshLibrary.Bind();
-
-    //     var data = new BufferSpan[models.Count];
-    //     var matrices = new Matrix4[models.Count];
-
-    //     for (int i = 0; i < models.Count; i++) {
-    //         var traceableModel = models[i];
-
-    //         var matrix =
-    //             Matrix4.CreateRotationZ(traceableModel.Rotation.Z) *
-    //             Matrix4.CreateRotationY(traceableModel.Rotation.Y) *
-    //             Matrix4.CreateRotationX(traceableModel.Rotation.X) *
-    //             Matrix4.CreateScale(traceableModel.Scale) *
-    //             Matrix4.CreateTranslation(traceableModel.Position);
-
-    //         matrix.Transpose();
-
-    //         matrices[i] = matrix;
-
-    //         var mesh = meshLibrary.GetMesh(traceableModel.MeshName);
-
-    //         //data[i] = mesh;
-    //     }
-    //     models.Clear();
-
-    //     modelBuffer.Clear();
-    //     modelBuffer.BufferSubData(data);
-
-    //     matrixSSBO.Clear();
-    //     matrixSSBO.BufferSubData(matrices);
-
-
-    // }
-
-    private void DrawSpheres() {
-
-        var shaderLibrary = Game.Get<ShaderLibrary>();
-
-
-        shaderLibrary.Uniform("fragSpheres", "resolution", Game.WindowSize);
-        shaderLibrary.Use("fragSpheres");
-
-        BufferSpheres();
-
-        sphereBuffer.Use(0);
-
-
-        vertexArray.Bind();
-
-        GL.DrawElements(PrimitiveType.Triangles, vertexArray.IndexCount, DrawElementsType.UnsignedInt, 0);
-    }
-
-    // private void DrawModels() {
-
-    //     var shaderLibrary = Game.Get<ShaderLibrary>();
-
-    //     var shader = shaderLibrary.Get("compModels");
-    //     shader.Uniform("modelCount", models.Count);
-    //     shader.Uniform("resolution", Game.WindowSize / 4f);
-
-    //     BufferModels();
-
-    //     modelBuffer.Use(5);
-    //     matrixSSBO.Use(6);
-
-    //     vertexArray.Bind();
-    //     //GL.DrawElements(PrimitiveType.Triangles, vertexArray.IndexCount, DrawElementsType.UnsignedInt, 0);
-
-    // }
-
-
 }
 
 
